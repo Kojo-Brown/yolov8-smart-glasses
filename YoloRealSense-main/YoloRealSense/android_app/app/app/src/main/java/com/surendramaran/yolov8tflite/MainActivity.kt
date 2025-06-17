@@ -134,6 +134,11 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private var isUsbConnected = false
     private var errorBackoffDelay = 1000L
     private val maxBackoffDelay = 10000L
+    // Single frame analysis for explain surrounding
+    private var isSingleFrameRequested = false
+    private var isAnalyzingFrame = false
+    private var analysisStartTime = 0L
+    private val ANALYSIS_TIMEOUT = 8000L // 8 seconds
 
     //For single frame testing
     private var isDetectorBusy = false
@@ -160,13 +165,6 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         }
     }
 
-    /**
-     * Gets distance in steps as a number for calculations
-     */
-    private fun getDistanceInSteps(distanceInMeters: Float): Float {
-        return distanceInMeters / 0.75f
-    }
-
     private fun detectTextInBitmap(bitmap: Bitmap) {
         if (!isTextDetectionActive) return
 
@@ -188,43 +186,6 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
             speak("Reading text: $lastDetectedText")
         } else {
             speak("No text detected yet. Please point camera at text and try again.")
-        }
-    }
-
-    /**
-     * Internal TTS execution with proper synchronization
-     */
-    private fun speakInternal(text: String) {
-        if (!isTTSInitialized) return
-
-        val latch = CountDownLatch(1)
-        ttsCompletionLatch.set(latch)
-
-        isTTSSpeaking.set(true)
-
-        // Stop speech recognition temporarily
-        pauseSpeechRecognitionForTTS()
-
-        val utteranceId = "utterance_${System.currentTimeMillis()}"
-        val params = Bundle().apply {
-            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-        }
-
-        runOnUiThread {
-            textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
-        }
-
-        // Wait for TTS completion (with timeout)
-        try {
-            latch.await(10, TimeUnit.SECONDS)
-        } catch (e: InterruptedException) {
-            Log.w(TAG, "TTS wait interrupted", e)
-        } finally {
-            isTTSSpeaking.set(false)
-            ttsCompletionLatch.set(null)
-
-            // Resume speech recognition after TTS completes
-            resumeSpeechRecognitionAfterTTS()
         }
     }
 
@@ -416,14 +377,14 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private fun handleExplainSurroundingCommand() {
         Log.d(TAG, "Executing EXPLAIN SURROUNDING command")
 
-        speak("Explain surrounding mode activated. Scanning full environment in all directions")
+        // Reset any previous analysis state
+        isSingleFrameRequested = false
+        isAnalyzingFrame = false
+
         currentMode = DetectionMode.EXPLAIN_SURROUNDING
         isTextDetectionActive = false
 
         if (allPermissionsGranted()) {
-            isDetectionActive = true
-            trackedObjects.clear()
-
             val connected = try {
                 rsContext.queryDevices().deviceCount > 0
             } catch (e: Exception) {
@@ -432,13 +393,60 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
             }
 
             if (connected) {
-                Log.d(TAG, "RealSense device detected — checking permissions")
-                checkUsbPermissions()
+                Log.d(TAG, "RealSense device detected for single frame analysis")
+
+                // Start the pipeline if not already running
+                if (!isPipelineRunning) {
+                    speak("Starting camera for analysis...")
+                    checkUsbPermissions()
+                    // Give time for pipeline to start
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (currentMode == DetectionMode.EXPLAIN_SURROUNDING) {
+                            requestSingleFrameAnalysis()
+                        }
+                    }, 2000)
+                } else {
+                    requestSingleFrameAnalysis()
+                }
             } else {
                 speak("RealSense camera is not connected")
-                Log.w(TAG, "RealSense not connected according to rsContext")
+                Log.w(TAG, "RealSense not connected")
             }
+        } else {
+            speak("Camera permission required for analysis")
         }
+    }
+
+    private fun requestSingleFrameAnalysis() {
+        if (isAnalyzingFrame) {
+            Log.w(TAG, "Analysis already in progress, ignoring request")
+            return
+        }
+
+        speak("Analyzing current view. Please hold camera steady.")
+
+        // Set analysis state
+        isSingleFrameRequested = true
+        isAnalyzingFrame = true
+        analysisStartTime = System.currentTimeMillis()
+
+        Log.d(TAG, "Single frame analysis requested at ${analysisStartTime}")
+
+        // Set timeout to prevent freezing
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (isAnalyzingFrame && (System.currentTimeMillis() - analysisStartTime) > ANALYSIS_TIMEOUT) {
+                Log.w(TAG, "Single frame analysis timeout - resetting state")
+                resetAnalysisState()
+                speak("Analysis timeout. Please try again.")
+            }
+        }, ANALYSIS_TIMEOUT)
+    }
+
+    private fun resetAnalysisState() {
+        isSingleFrameRequested = false
+        isAnalyzingFrame = false
+        analysisStartTime = 0L
+        Log.d(TAG, "Analysis state reset")
     }
 
     private fun handleReadModeCommand() {
@@ -770,70 +778,6 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         }
     }
 
-    private fun handleExplainSurrounding(detectedBoxes: List<BoundingBox>, currentTime: Long) {
-        if (textToSpeech.isSpeaking || currentTime - lastAnnouncementTime < announcementCooldown) {
-            return
-        }
-
-        Log.d(TAG, "Explain surrounding called with ${detectedBoxes.size} boxes")
-
-        if (detectedBoxes.isEmpty()) {
-            speak("No objects detected. Area is clear.")
-            lastAnnouncementTime = currentTime
-            return
-        }
-
-        // Get positions for all objects
-        val allObjects = detectedBoxes.map { box ->
-            val position = getEnhancedObjectPosition(box, 640, 480)
-            Pair(box, position)
-        }
-
-        val objectsWithValidDistance = allObjects.filter { it.first.distance > 0f }
-
-        val message = if (objectsWithValidDistance.isNotEmpty()) {
-            buildDetailedDescription(objectsWithValidDistance)
-        } else {
-            buildBasicDescription(allObjects)
-        }
-
-        speak(message)
-        lastAnnouncementTime = currentTime
-    }
-
-    private fun buildDetailedDescription(objectsWithDistance: List<Pair<BoundingBox, EnhancedObjectPosition>>): String {
-        val immediate = objectsWithDistance.filter { it.first.distance < 1.0f }
-        val close = objectsWithDistance.filter { it.first.distance >= 1.0f && it.first.distance < 2.25f }
-        val distant = objectsWithDistance.filter { it.first.distance >= 2.25f }
-
-        return when {
-            immediate.isNotEmpty() -> {
-                val descriptions = immediate.take(3).map { (box, position) ->
-                    val objectName = getSpecificObjectName(box.clsName)
-                    val distance = convertDistanceToSteps(box.distance)
-                    "$objectName $distance on ${position.detailedHorizontalPosition}"
-                }
-                "Detected ${descriptions.joinToString(" and ")}. Stop immediately."
-            }
-            close.isNotEmpty() -> {
-                val descriptions = close.take(4).map { (box, position) ->
-                    val objectName = getSpecificObjectName(box.clsName)
-                    val distance = convertDistanceToSteps(box.distance)
-                    "$objectName $distance on ${position.detailedHorizontalPosition}"
-                }
-                "Detected ${descriptions.joinToString(" and ")}. Proceed carefully."
-            }
-            distant.isNotEmpty() -> {
-                val descriptions = distant.take(3).map { (box, position) ->
-                    val objectName = getSpecificObjectName(box.clsName)
-                    "$objectName on ${position.detailedHorizontalPosition}"
-                }
-                "Detected ${descriptions.joinToString(" and ")} in distance. Path is clear."
-            }
-            else -> "No objects detected."
-        }
-    }
-
     private fun getSpecificObjectName(clsName: String): String {
         return when(clsName.lowercase().trim()) {
             "bicycle" -> "bicycle"
@@ -854,14 +798,6 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
             "red pedestrian light" -> "red light"
             else -> clsName
         }
-    }
-
-    private fun buildBasicDescription(allObjects: List<Pair<BoundingBox, EnhancedObjectPosition>>): String {
-        val descriptions = allObjects.take(4).map { (box, position) ->
-            val objectName = getSpecificObjectName(box.clsName)
-            "$objectName on ${position.detailedHorizontalPosition}"
-        }
-        return "Detected ${descriptions.joinToString(" and ")}. Proceed with caution."
     }
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -1043,13 +979,6 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                     }
                 }
 
-                Log.d(TAG, "Bitmap to detect size: ${bitmap.width}x${bitmap.height}")
-                Log.d(TAG, "Bitmap recycled: ${bitmap.isRecycled}")
-                val pixel = bitmap.getPixel(bitmap.width / 2, bitmap.height / 2)
-                Log.d(TAG, "Center pixel ARGB: ${Integer.toHexString(pixel)}")
-
-
-
                 runOnUiThread {
                     binding.cameraPreview.setImageBitmap(bitmap)
                     binding.inferenceTime.text = ""
@@ -1060,15 +989,61 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                     detectTextInBitmap(bitmap)
                 }
 
-                //Run detection in the background
-                if (isDetectionActive && ::detector.isInitialized && !isDetectorBusy && currentMode != DetectionMode.READ_MODE) {
+                // IMPROVED Single frame analysis for EXPLAIN_SURROUNDING
+                if (currentMode == DetectionMode.EXPLAIN_SURROUNDING &&
+                    isSingleFrameRequested &&
+                    isAnalyzingFrame &&
+                    !isDetectorBusy) {
+
+                    Log.d(TAG, "Processing single frame for explain surrounding")
+
+                    // Don't reset the flag immediately - wait for detection to complete
+                    if (::detector.isInitialized) {
+                        isDetectorBusy = true
+                        detectionExecutor.execute {
+                            try {
+                                Log.d(TAG, "Starting detector.detect() for single frame")
+                                val startTime = System.currentTimeMillis()
+                                detector.detect(bitmap)
+                                val endTime = System.currentTimeMillis()
+                                Log.d(TAG, "Single frame detection completed in ${endTime - startTime}ms")
+
+                                // Note: Don't reset state here - let onDetect handle it
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error in single frame detection", e)
+                                isDetectorBusy = false
+                                runOnUiThread {
+                                    speak("Analysis failed. Please try again.")
+                                    resetAnalysisState()
+                                }
+                            }
+                        }
+                    } else {
+                        Log.e(TAG, "Detector not initialized")
+                        speak("Detection system not ready. Please try again.")
+                        resetAnalysisState()
+                    }
+                }
+
+                // Continuous detection for START_DETECTION mode only
+                if (currentMode == DetectionMode.START_DETECTION &&
+                    isDetectionActive &&
+                    ::detector.isInitialized &&
+                    !isDetectorBusy &&
+                    !isAnalyzingFrame) { // Don't interfere with single frame analysis
+
                     isDetectorBusy = true
                     detectionExecutor.execute {
-                        val startTime = System.currentTimeMillis()
-                        detector.detect(bitmap)
-                        val endTime = System.currentTimeMillis()
-                        Log.d(TAG, "Frame inference took ${endTime - startTime}ms")
-                        isDetectorBusy = false
+                        try {
+                            val startTime = System.currentTimeMillis()
+                            detector.detect(bitmap)
+                            val endTime = System.currentTimeMillis()
+                            Log.d(TAG, "Continuous detection took ${endTime - startTime}ms")
+                            isDetectorBusy = false
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error in continuous detection", e)
+                            isDetectorBusy = false
+                        }
                     }
                 }
             }
@@ -1433,72 +1408,151 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private fun stopCamera() = stopRealsensePipeline()
 
     override fun onDetect(boundingBoxes: List<BoundingBox>, inferenceTime: Long) {
-        Log.d(TAG, "YOLO DETECTION: ${boundingBoxes.size} boxes detected")
+        Log.d(TAG, "YOLO DETECTION: ${boundingBoxes.size} boxes detected for mode: $currentMode")
 
         runOnUiThread {
             binding.inferenceTime.text = "${inferenceTime}ms"
 
-            if (!isTTSInitialized || !isDetectionActive) {
+            if (!isTTSInitialized) {
                 binding.overlay.setResults(boundingBoxes)
+                isDetectorBusy = false
                 return@runOnUiThread
             }
 
             val currentTime = System.currentTimeMillis()
             val highConfidenceBoxes = boundingBoxes.filter { it.confidence > minConfidence }
 
-            // Calculate distances with enhanced error handling
+            // Calculate distances
             val depthWidth = currentDepthFrame?.width ?: 0
             val depthHeight = currentDepthFrame?.height ?: 0
 
             Log.d(TAG, "Depth frame info: ${depthWidth}x${depthHeight}")
 
-            // Only proceed with distance calculation if we have a valid depth frame
             if (depthWidth > 0 && depthHeight > 0 && currentDepthFrame != null) {
                 highConfidenceBoxes.forEach { box ->
                     val distance = calculateRobustDistance(box, depthWidth, depthHeight)
                     box.distance = distance
-
-                    // Log the final result for each object
-                    val stepDescription = if (distance > 0) {
-                        convertDistanceToSteps(distance)
-                    } else {
-                        "unknown distance"
-                    }
-
-                    Log.d(TAG, "FINAL: ${box.clsName} -> ${distance}m (${stepDescription})")
+                    Log.d(TAG, "Object: ${box.clsName} -> ${distance}m")
                 }
             } else {
-                Log.w(TAG, "Invalid or missing depth frame, skipping distance calculation")
-                // Set all distances to -1 to indicate no depth data
+                Log.w(TAG, "No depth data available")
                 highConfidenceBoxes.forEach { box ->
                     box.distance = -1f
-                    Log.d(TAG, "FINAL: ${box.clsName} -> no depth data available")
                 }
             }
 
-            // Update overlay with calculated distances (or -1 if no depth data)
+            // Update overlay
             binding.overlay.setResults(highConfidenceBoxes)
 
-            // Continue with mode-specific handling only if we have valid distance data
-            if (currentMode != DetectionMode.READ_MODE && depthWidth > 0 && depthHeight > 0) {
-                when(currentMode) {
-                    DetectionMode.START_DETECTION -> {
+            // Handle different detection modes
+            when(currentMode) {
+                DetectionMode.START_DETECTION -> {
+                    if (isDetectionActive && depthWidth > 0 && depthHeight > 0) {
                         handleStartDetection(highConfidenceBoxes, currentTime)
                     }
-                    DetectionMode.EXPLAIN_SURROUNDING -> {
-                        handleExplainSurrounding(highConfidenceBoxes, currentTime)
-                    }
-                    else -> { }
                 }
-            } else if (depthWidth <= 0 || depthHeight <= 0) {
-                Log.w(TAG, "Skipping mode-specific handling due to invalid depth frame")
+                DetectionMode.EXPLAIN_SURROUNDING -> {
+                    // Handle explain surrounding - only if we're in analysis mode
+                    if (isAnalyzingFrame) {
+                        Log.d(TAG, "Processing explain surrounding results - completing analysis")
+                        handleExplainSurroundingResults(highConfidenceBoxes, depthWidth > 0 && depthHeight > 0)
+
+                        // Reset analysis state after processing
+                        resetAnalysisState()
+                    } else {
+                        Log.d(TAG, "Received detection results but not in analysis mode - ignoring")
+                    }
+                }
+                DetectionMode.READ_MODE -> {
+                    // Read mode doesn't need object detection processing
+                }
+            }
+
+            // Reset detector busy flag
+            isDetectorBusy = false
+        }
+    }
+
+    private fun handleExplainSurroundingResults(detectedBoxes: List<BoundingBox>, hasDepthData: Boolean) {
+        Log.d(TAG, "Processing explain surrounding results: ${detectedBoxes.size} objects, depth: $hasDepthData")
+
+        if (detectedBoxes.isEmpty()) {
+            speak("No objects detected in current view. Area appears clear.")
+            return
+        }
+
+        if (!hasDepthData) {
+            // Provide basic description without distances
+            val objectNames = detectedBoxes.map { getSpecificObjectName(it.clsName) }.distinct()
+            speak("Objects detected: ${objectNames.joinToString(", ")}. Distance information unavailable.")
+            return
+        }
+
+        // Filter objects with valid distance data
+        val objectsWithDistance = detectedBoxes.filter { it.distance > 0f }
+
+        if (objectsWithDistance.isEmpty()) {
+            val objectNames = detectedBoxes.map { getSpecificObjectName(it.clsName) }.distinct()
+            speak("Objects visible: ${objectNames.joinToString(", ")}. Distance measurement unavailable.")
+            return
+        }
+
+        // Build description
+        val description = buildSimpleDescription(objectsWithDistance)
+        speak(description)
+    }
+
+    private fun buildSimpleDescription(objects: List<BoundingBox>): String {
+        // Sort by distance
+        val sortedObjects = objects.sortedBy { it.distance }
+
+        // Group by distance ranges
+        val close = sortedObjects.filter { it.distance < 2.25f } // Within 3 steps
+        val medium = sortedObjects.filter { it.distance >= 2.25f && it.distance < 7.5f } // 3-10 steps
+        val far = sortedObjects.filter { it.distance >= 7.5f } // Beyond 10 steps
+
+        val parts = mutableListOf<String>()
+
+        if (close.isNotEmpty()) {
+            val closeDesc = close.take(3).map { box ->
+                val position = getEnhancedObjectPosition(box, 640, 480)
+                val objectName = getSpecificObjectName(box.clsName)
+                val distance = convertDistanceToSteps(box.distance)
+                "$objectName $distance on ${position.detailedHorizontalPosition}"
+            }
+            parts.add("Close: ${closeDesc.joinToString(", ")}")
+
+            if (close.any { it.distance < 0.75f }) {
+                parts.add("Caution advised")
             }
         }
+
+        if (medium.isNotEmpty()) {
+            val mediumNames = medium.map { getSpecificObjectName(it.clsName) }.distinct()
+            parts.add("Medium distance: ${mediumNames.take(4).joinToString(", ")}")
+        }
+
+        if (far.isNotEmpty()) {
+            val farNames = far.map { getSpecificObjectName(it.clsName) }.distinct()
+            parts.add("Far: ${farNames.take(3).joinToString(", ")}")
+        }
+
+        return parts.joinToString(". ") + "."
     }
 
     override fun onEmptyDetect() {
         runOnUiThread {
             binding.overlay.invalidate()
+
+            // Handle empty detection for single frame analysis
+            if (currentMode == DetectionMode.EXPLAIN_SURROUNDING && isAnalyzingFrame) {
+                Log.d(TAG, "Empty detection for explain surrounding")
+                speak("No objects detected in current view. Area appears clear.")
+                resetAnalysisState()
+            }
+
+            // Reset detector busy flag
+            isDetectorBusy = false
         }
     }
 
