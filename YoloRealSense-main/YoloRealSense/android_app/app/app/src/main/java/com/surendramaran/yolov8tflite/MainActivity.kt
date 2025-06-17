@@ -199,48 +199,6 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     }
 
     /**
-     * Properly pause speech recognition when TTS is speaking
-     */
-    private fun pauseSpeechRecognitionForTTS() {
-        speechExecutor.execute {
-            try {
-                if (isListening) {
-                    stopListening()
-                }
-
-                // Release audio focus temporarily
-                audioManager.abandonAudioFocusRequest(audioFocusRequest)
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Error pausing speech recognition", e)
-            }
-        }
-    }
-
-    /**
-     * Resume speech recognition after TTS completes
-     */
-    private fun resumeSpeechRecognitionAfterTTS() {
-        speechExecutor.execute {
-            try {
-                // Brief delay to ensure TTS resources are released
-                Thread.sleep(200)
-
-                // Process any queued commands first
-                processQueuedCommands()
-
-                // Resume normal listening if not processing commands
-                if (!isProcessingCommand) {
-                    safeStartListening()
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Error resuming speech recognition", e)
-            }
-        }
-    }
-
-    /**
      * Process queued voice commands
      */
     private fun processQueuedCommands() {
