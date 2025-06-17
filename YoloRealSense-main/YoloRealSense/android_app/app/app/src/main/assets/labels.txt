@@ -1,0 +1,16 @@
+Bicycle
+Bus
+Car
+Dog
+Electric pole
+Motorcycle
+Person
+Traffic signs
+Tree
+Uncovered manhole
+green pedestrian light
+no pedestrian crossing sign
+no pedestrian lane
+pedestrian crossing sign
+pedestrian lane
+red pedestrian light
