@@ -147,15 +147,15 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     /**
      * Converts metric distance to intuitive foot step measurements with natural language
      * One step is approximately 0.75 meters
+     * Returns integer steps only - no decimals
      */
     private fun convertDistanceToSteps(distanceInMeters: Float): String {
         return when {
             distanceInMeters <= 0f -> "unknown distance"
-            distanceInMeters < 0.1f -> "extremely close"
-            distanceInMeters < 1.0f -> "about one step away"
+            distanceInMeters < 0.2f -> "extremely close"
             else -> {
-                val steps = round(distanceInMeters / 0.75f).toInt()
-                if (steps == 1) "one step away" else "$steps steps away"
+                val steps = round(distanceInMeters / 0.75f).toInt().coerceAtLeast(1)
+                if (steps == 1) "1 step away" else "$steps steps away"
             }
         }
     }
@@ -387,7 +387,8 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private fun handleStartDetectionCommand() {
         Log.d(TAG, "Executing START DETECTION command")
 
-        speak("Start detection activated. Monitoring objects in close proximity within 3 steps radius")
+        // Updated message to reflect 10 steps radius
+        speak("Start detection activated. Monitoring objects in close proximity within 10 steps radius")
         currentMode = DetectionMode.START_DETECTION
         isTextDetectionActive = false
 
@@ -667,8 +668,8 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     }
 
     private fun handleStartDetection(detectedBoxes: List<BoundingBox>, currentTime: Long) {
-        // Filter objects within approximately 3 steps (2.25 meters) for start detection monitoring
-        val nearbyObjects = detectedBoxes.filter { it.distance <= 2.25f && it.distance > 0f }
+        // Filter objects within approximately 10 steps (7.5 meters) for start detection monitoring
+        val nearbyObjects = detectedBoxes.filter { it.distance <= 7.5f && it.distance > 0f }
 
         if (nearbyObjects.isEmpty() || textToSpeech.isSpeaking ||
             currentTime - lastAnnouncementTime < announcementCooldown) {
@@ -687,8 +688,8 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         // Prioritize objects by distance and position
         val prioritizedObjects = prioritizeObjects(objectsWithPositions)
 
-        // Take top 3 most important objects to avoid overwhelming the user
-        val topObjects = prioritizedObjects.take(3)
+        // Take top 5 most important objects (increased from 3 since we have a larger detection range)
+        val topObjects = prioritizedObjects.take(5)
 
         if (topObjects.isNotEmpty()) {
             // Generate safe route suggestions
@@ -709,22 +710,26 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                         box.distance < 1.0f -> {
                             append("$objectName $distanceDescription on your ${position.horizontalPosition}")
                         }
-                        else -> {
+                        box.distance < 3.0f -> {
                             append("$objectName $distanceDescription ${position.horizontalPosition}")
+                        }
+                        else -> {
+                            // For objects 3+ steps away, provide more concise information
+                            append("$objectName ${distanceDescription} ${position.horizontalPosition}")
                         }
                     }
 
                     if (index < topObjects.size - 1) append(", ")
                 }
 
-                // Add route suggestion if there are close objects
-                val veryCloseObjects = topObjects.filter { it.first.distance < 1.0f }
+                // Add route suggestion if there are close objects (within 3 steps for immediate navigation)
+                val veryCloseObjects = topObjects.filter { it.first.distance < 2.25f }
                 if (veryCloseObjects.isNotEmpty() && safeRoutes.isNotEmpty()) {
                     append(". ${safeRoutes.first().description}")
                 }
             }
 
-            // Use different vibration patterns based on proximity (in steps)
+            // Use different vibration patterns based on proximity (keep existing logic for immediate safety)
             val closestDistance = topObjects.minOf { it.first.distance }
             when {
                 closestDistance < 0.5f -> { // Less than half a step
@@ -740,13 +745,22 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                     // Medium vibration for nearby objects
                     safeVibrate()
                 }
-                else -> { // Beyond one step but within 3 steps
-                    // Light vibration for objects within monitoring range
+                closestDistance < 3.0f -> { // Within 3 steps (medium range)
+                    // Light vibration for objects within immediate navigation range
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        vibrator.vibrate(VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE))
+                        vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
                     } else {
                         @Suppress("DEPRECATION")
-                        vibrator.vibrate(30)
+                        vibrator.vibrate(50)
+                    }
+                }
+                else -> { // Beyond 3 steps but within 10 steps (extended monitoring range)
+                    // Very light vibration for awareness of distant objects
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        vibrator.vibrate(VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        vibrator.vibrate(20)
                     }
                 }
             }

@@ -92,30 +92,15 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
             // 7. Draw class name + step distance
             canvas.drawText(labelText, left, top + bounds.height(), textPaint)
-
-            // 8. Draw step distance at bottom right of box
-//            canvas.drawText(
-//                stepDistance,
-//                right - distancePaint.measureText(stepDistance) - 10f,
-//                bottom - 10f,
-//                distancePaint
-//            )
         }
     }
 
     private fun convertDistanceToStepsShort(distanceInMeters: Float): String {
         return when {
-            distanceInMeters <= 0f -> "no data"  // Clear indication of missing data
-            distanceInMeters < 0.2f -> "touch"   // Very close - less than 20cm
-            distanceInMeters < 0.5f -> "0.5s"    // Half step - 20-50cm
-            distanceInMeters < 0.8f -> "1s"      // One step - 50-80cm
-            distanceInMeters < 1.1f -> "1.5s"    // 80cm-1.1m
-            distanceInMeters < 1.6f -> "2s"      // 1.1-1.6m
-            distanceInMeters < 2.3f -> "3s"      // 1.6-2.3m
-            distanceInMeters < 3.0f -> "4s"      // 2.3-3m
-            distanceInMeters < 4.5f -> "6s"      // 3-4.5m
+            distanceInMeters <= 0f -> "no data"
+            distanceInMeters < 0.2f -> "touch"
             else -> {
-                val steps = round(distanceInMeters / 0.75f).toInt()
+                val steps = round(distanceInMeters / 0.75f).toInt().coerceAtLeast(1)
                 "${steps}s"
             }
         }
