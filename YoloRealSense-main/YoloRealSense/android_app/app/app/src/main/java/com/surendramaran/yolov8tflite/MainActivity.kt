@@ -554,62 +554,6 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         })
     }
 
-    private fun generateSafeRoutes(objectsWithPositions: List<Pair<BoundingBox, ObjectPosition>>): List<SafeRoute> {
-        val routes = mutableListOf<SafeRoute>()
-
-        // Check for obstacles in different directions using step-based measurements
-        val leftObstacles = objectsWithPositions.filter {
-            it.second.horizontalPosition == "left" && it.second.distance < 1.125f // Within 1.5 steps
-        }
-        val centerObstacles = objectsWithPositions.filter {
-            it.second.horizontalPosition == "center" && it.second.distance < 1.125f // Within 1.5 steps
-        }
-        val rightObstacles = objectsWithPositions.filter {
-            it.second.horizontalPosition == "right" && it.second.distance < 1.125f // Within 1.5 steps
-        }
-
-        // Suggest safest routes based on obstacle distribution
-        when {
-            centerObstacles.isEmpty() && leftObstacles.isEmpty() && rightObstacles.isEmpty() -> {
-                routes.add(SafeRoute("forward", "Path ahead is clear for at least 2 steps, you can continue forward", 1))
-            }
-            centerObstacles.isNotEmpty() -> {
-                val centerDistance = centerObstacles.minOf { it.second.distance }
-                val distanceDescription = convertDistanceToSteps(centerDistance)
-
-                when {
-                    leftObstacles.isEmpty() && rightObstacles.isNotEmpty() -> {
-                        routes.add(SafeRoute("left", "Move to your left to avoid obstacle $distanceDescription ahead", 1))
-                    }
-                    rightObstacles.isEmpty() && leftObstacles.isNotEmpty() -> {
-                        routes.add(SafeRoute("right", "Move to your right to avoid obstacle $distanceDescription ahead", 1))
-                    }
-                    leftObstacles.isEmpty() && rightObstacles.isEmpty() -> {
-                        routes.add(SafeRoute("left", "Step to your left to bypass obstacle $distanceDescription ahead", 1))
-                        routes.add(SafeRoute("right", "Step to your right to bypass obstacle $distanceDescription ahead", 2))
-                    }
-                    else -> {
-                        routes.add(SafeRoute("stop", "Obstacles detected within 2 steps on multiple sides, please stop and reassess", 1))
-                    }
-                }
-            }
-            leftObstacles.isNotEmpty() && rightObstacles.isEmpty() -> {
-                val leftDistance = leftObstacles.minOf { it.second.distance }
-                val distanceDescription = convertDistanceToSteps(leftDistance)
-                routes.add(SafeRoute("right", "Move to your right, obstacle detected $distanceDescription on the left", 1))
-            }
-            rightObstacles.isNotEmpty() && leftObstacles.isEmpty() -> {
-                val rightDistance = rightObstacles.minOf { it.second.distance }
-                val distanceDescription = convertDistanceToSteps(rightDistance)
-                routes.add(SafeRoute("left", "Move to your left, obstacle detected $distanceDescription on the right", 1))
-            }
-            else -> {
-                routes.add(SafeRoute("forward", "Continue straight, maintain current path, obstacles detected but not blocking immediate route", 1))
-            }
-        }
-
-        return routes.sortedBy { it.priority }
-    }
 
     private fun getDetailedObjectName(clsName: String): String {
         return when(clsName.lowercase()) {
@@ -633,9 +577,50 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         }
     }
 
+//    private fun handleStartDetection(detectedBoxes: List<BoundingBox>, currentTime: Long) {
+//        // Filter objects within approximately 10 steps (7.5 meters) for start detection monitoring
+//        val nearbyObjects = detectedBoxes.filter { it.distance <= 7.5f && it.distance > 0f }
+//
+//        if (nearbyObjects.isEmpty() || textToSpeech.isSpeaking ||
+//            currentTime - lastAnnouncementTime < announcementCooldown) {
+//            return
+//        }
+//
+//        val frameWidth = currentDepthFrame?.width ?: 640
+//        val frameHeight = currentDepthFrame?.height ?: 480
+//
+//        // Get positions for all nearby objects
+//        val objectsWithPositions = nearbyObjects.map { box ->
+//            val position = getObjectPosition(box, frameWidth, frameHeight)
+//            Pair(box, position)
+//        }
+//
+//        // Prioritize objects by distance and position
+//        val prioritizedObjects = prioritizeObjects(objectsWithPositions)
+//
+//        // Take top 3 most important objects for concise announcement
+//        val topObjects = prioritizedObjects.take(3)
+//
+//        if (topObjects.isNotEmpty()) {
+//            // Generate safe route suggestions
+//            val safeRoutes = generateSafeRoutes(objectsWithPositions)
+//
+//            // Build concise announcement with integrated navigation
+//            val message = buildConciseDetectionMessage(topObjects, safeRoutes)
+//
+//            // Use vibration patterns based on proximity
+//            val closestDistance = topObjects.minOf { it.first.distance }
+//            applyVibrationPattern(closestDistance)
+//
+//            speak(message)
+//            lastAnnouncementTime = currentTime
+//        }
+//    }
+
     private fun handleStartDetection(detectedBoxes: List<BoundingBox>, currentTime: Long) {
+        // All boxes passed here already have valid distances (> 0f)
         // Filter objects within approximately 10 steps (7.5 meters) for start detection monitoring
-        val nearbyObjects = detectedBoxes.filter { it.distance <= 7.5f && it.distance > 0f }
+        val nearbyObjects = detectedBoxes.filter { it.distance <= 7.5f }
 
         if (nearbyObjects.isEmpty() || textToSpeech.isSpeaking ||
             currentTime - lastAnnouncementTime < announcementCooldown) {
@@ -645,7 +630,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         val frameWidth = currentDepthFrame?.width ?: 640
         val frameHeight = currentDepthFrame?.height ?: 480
 
-        // Get positions for all nearby objects
+        // Get positions for all nearby objects (all have valid distances)
         val objectsWithPositions = nearbyObjects.map { box ->
             val position = getObjectPosition(box, frameWidth, frameHeight)
             Pair(box, position)
@@ -654,86 +639,208 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         // Prioritize objects by distance and position
         val prioritizedObjects = prioritizeObjects(objectsWithPositions)
 
-        // Take top 5 most important objects (increased from 3 since we have a larger detection range)
-        val topObjects = prioritizedObjects.take(5)
+        // Take top 3 most important objects for concise announcement
+        val topObjects = prioritizedObjects.take(3)
 
         if (topObjects.isNotEmpty()) {
             // Generate safe route suggestions
             val safeRoutes = generateSafeRoutes(objectsWithPositions)
 
-            val message = buildString {
-                append("Detection: ")
+            // Build concise announcement with integrated navigation
+            val message = buildConciseDetectionMessage(topObjects, safeRoutes)
 
-                // Announce objects with step-based positions
-                topObjects.forEachIndexed { index, (box, position) ->
-                    val objectName = getDetailedObjectName(box.clsName)
-                    val distanceDescription = convertDistanceToSteps(box.distance)
-
-                    when {
-                        box.distance < 0.5f -> {
-                            append("Warning! $objectName $distanceDescription on your ${position.horizontalPosition}")
-                        }
-                        box.distance < 1.0f -> {
-                            append("$objectName $distanceDescription on your ${position.horizontalPosition}")
-                        }
-                        box.distance < 3.0f -> {
-                            append("$objectName $distanceDescription ${position.horizontalPosition}")
-                        }
-                        else -> {
-                            // For objects 3+ steps away, provide more concise information
-                            append("$objectName ${distanceDescription} ${position.horizontalPosition}")
-                        }
-                    }
-
-                    if (index < topObjects.size - 1) append(", ")
-                }
-
-                // Add route suggestion if there are close objects (within 3 steps for immediate navigation)
-                val veryCloseObjects = topObjects.filter { it.first.distance < 2.25f }
-                if (veryCloseObjects.isNotEmpty() && safeRoutes.isNotEmpty()) {
-                    append(". ${safeRoutes.first().description}")
-                }
-            }
-
-            // Use different vibration patterns based on proximity (keep existing logic for immediate safety)
+            // Use vibration patterns based on proximity
             val closestDistance = topObjects.minOf { it.first.distance }
-            when {
-                closestDistance < 0.5f -> { // Less than half a step
-                    // Strong vibration for very close objects
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 200, 100, 200), -1))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        vibrator.vibrate(longArrayOf(0, 200, 100, 200), -1)
-                    }
-                }
-                closestDistance < 1.0f -> { // Within one step
-                    // Medium vibration for nearby objects
-                    safeVibrate()
-                }
-                closestDistance < 3.0f -> { // Within 3 steps (medium range)
-                    // Light vibration for objects within immediate navigation range
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        vibrator.vibrate(50)
-                    }
-                }
-                else -> { // Beyond 3 steps but within 10 steps (extended monitoring range)
-                    // Very light vibration for awareness of distant objects
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        vibrator.vibrate(VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        vibrator.vibrate(20)
-                    }
-                }
-            }
+            applyVibrationPattern(closestDistance)
 
             speak(message)
             lastAnnouncementTime = currentTime
         }
+    }
+
+    private fun buildConciseDetectionMessage(
+        objects: List<Pair<BoundingBox, ObjectPosition>>,
+        safeRoutes: List<SafeRoute>
+    ): String {
+        val closestObject = objects.first() // Already prioritized
+        val (box, position) = closestObject
+
+        val objectName = getSpecificObjectName(box.clsName)
+        val distance = convertDistanceToSteps(box.distance)
+        val direction = position.horizontalPosition
+
+        return when {
+            // Very close objects - immediate safety alert
+            box.distance < 0.75f -> {
+                val route = if (safeRoutes.isNotEmpty()) {
+                    when (safeRoutes.first().direction) {
+                        "left" -> "step left"
+                        "right" -> "step right"
+                        "stop" -> "stop"
+                        else -> "be careful"
+                    }
+                } else "be careful"
+
+                "Warning: $objectName $distance ahead $direction, $route"
+            }
+
+            // Close objects with multiple detections
+            objects.size > 1 && box.distance < 2.25f -> {
+                val secondObject = objects[1]
+                val secondName = getSpecificObjectName(secondObject.first.clsName)
+                val secondDistance = convertDistanceToSteps(secondObject.first.distance)
+                val secondDirection = secondObject.second.horizontalPosition
+
+                val route = if (safeRoutes.isNotEmpty()) {
+                    when (safeRoutes.first().direction) {
+                        "left" -> "go left"
+                        "right" -> "go right"
+                        "forward" -> "continue straight"
+                        else -> "proceed carefully"
+                    }
+                } else "proceed carefully"
+
+                "$objectName $distance $direction, $secondName $secondDistance $secondDirection - $route"
+            }
+
+            // Single close object
+            box.distance < 2.25f -> {
+                val route = if (safeRoutes.isNotEmpty()) {
+                    when (safeRoutes.first().direction) {
+                        "left" -> "keep left"
+                        "right" -> "keep right"
+                        "forward" -> "continue ahead"
+                        else -> "proceed carefully"
+                    }
+                } else "noted"
+
+                "$objectName $distance $direction - $route"
+            }
+
+            // Distant monitoring (3-10 steps)
+            else -> {
+                val additionalCount = objects.size - 1
+                val baseMessage = "$objectName $distance $direction"
+
+                if (additionalCount > 0) {
+                    "$baseMessage plus $additionalCount more objects ahead"
+                } else {
+                    "$baseMessage ahead"
+                }
+            }
+        }
+    }
+
+    private fun applyVibrationPattern(closestDistance: Float) {
+        when {
+            closestDistance < 0.5f -> { // Less than half a step
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 200, 100, 200), -1))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(longArrayOf(0, 200, 100, 200), -1)
+                }
+            }
+            closestDistance < 1.0f -> { // Within one step
+                safeVibrate()
+            }
+            closestDistance < 3.0f -> { // Within 3 steps
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(50)
+                }
+            }
+            else -> { // Beyond 3 steps but within 10 steps
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(20)
+                }
+            }
+        }
+    }
+
+    private fun generateSafeRoutes(objectsWithPositions: List<Pair<BoundingBox, ObjectPosition>>): List<SafeRoute> {
+        val routes = mutableListOf<SafeRoute>()
+
+        // Check for obstacles in different directions using step-based measurements
+        val leftObstacles = objectsWithPositions.filter {
+            it.second.horizontalPosition == "left" && it.second.distance < 2.25f // Within 3 steps
+        }
+        val centerObstacles = objectsWithPositions.filter {
+            it.second.horizontalPosition == "center" && it.second.distance < 2.25f // Within 3 steps
+        }
+        val rightObstacles = objectsWithPositions.filter {
+            it.second.horizontalPosition == "right" && it.second.distance < 2.25f // Within 3 steps
+        }
+
+        // Suggest safest routes based on obstacle distribution with detailed descriptions
+        when {
+            centerObstacles.isEmpty() && leftObstacles.isEmpty() && rightObstacles.isEmpty() -> {
+                routes.add(SafeRoute("forward", "Clear path ahead for at least 3 steps. Continue straight with confidence", 1))
+            }
+            centerObstacles.isNotEmpty() -> {
+                val centerDistance = centerObstacles.minOf { it.second.distance }
+                val centerObject = centerObstacles.minByOrNull { it.second.distance }
+                val objectName = centerObject?.let { getSpecificObjectName(it.first.clsName) } ?: "obstacle"
+                val distanceDescription = convertDistanceToSteps(centerDistance)
+
+                when {
+                    leftObstacles.isEmpty() && rightObstacles.isNotEmpty() -> {
+                        routes.add(SafeRoute("left", "Move to your left to bypass $objectName $distanceDescription ahead. Left side is clear", 1))
+                    }
+                    rightObstacles.isEmpty() && leftObstacles.isNotEmpty() -> {
+                        routes.add(SafeRoute("right", "Move to your right to avoid $objectName $distanceDescription ahead. Right side is clear", 1))
+                    }
+                    leftObstacles.isEmpty() && rightObstacles.isEmpty() -> {
+                        routes.add(SafeRoute("left", "Step to your left to bypass $objectName $distanceDescription ahead", 1))
+                        routes.add(SafeRoute("right", "Step to your right to bypass $objectName $distanceDescription ahead", 2))
+                    }
+                    else -> {
+                        val totalObstacles = leftObstacles.size + centerObstacles.size + rightObstacles.size
+                        routes.add(SafeRoute("stop", "$totalObstacles obstacles detected within 3 steps. Stop and reassess your surroundings", 1))
+                    }
+                }
+            }
+            leftObstacles.isNotEmpty() && rightObstacles.isEmpty() -> {
+                val leftDistance = leftObstacles.minOf { it.second.distance }
+                val leftObject = leftObstacles.minByOrNull { it.second.distance }
+                val objectName = leftObject?.let { getSpecificObjectName(it.first.clsName) } ?: "obstacle"
+                val distanceDescription = convertDistanceToSteps(leftDistance)
+                routes.add(SafeRoute("right", "Bear right to avoid $objectName $distanceDescription on your left. Right path is clear", 1))
+            }
+            rightObstacles.isNotEmpty() && leftObstacles.isEmpty() -> {
+                val rightDistance = rightObstacles.minOf { it.second.distance }
+                val rightObject = rightObstacles.minByOrNull { it.second.distance }
+                val objectName = rightObject?.let { getSpecificObjectName(it.first.clsName) } ?: "obstacle"
+                val distanceDescription = convertDistanceToSteps(rightDistance)
+                routes.add(SafeRoute("left", "Bear left to avoid $objectName $distanceDescription on your right. Left path is clear", 1))
+            }
+            else -> {
+                // Multiple obstacles on both sides
+                val closestObstacle = objectsWithPositions.minByOrNull { it.second.distance }
+                val closestDistance = closestObstacle?.second?.distance ?: 0f
+                when {
+                    closestDistance < 0.75f -> {
+                        routes.add(SafeRoute("stop", "Multiple obstacles very close. Stop immediately and reassess", 1))
+                    }
+                    leftObstacles.size < rightObstacles.size -> {
+                        routes.add(SafeRoute("left", "Multiple obstacles detected. Left side has fewer obstacles. Proceed carefully left", 1))
+                    }
+                    rightObstacles.size < leftObstacles.size -> {
+                        routes.add(SafeRoute("right", "Multiple obstacles detected. Right side has fewer obstacles. Proceed carefully right", 1))
+                    }
+                    else -> {
+                        routes.add(SafeRoute("careful", "Complex obstacle pattern detected. Proceed very slowly straight ahead", 1))
+                    }
+                }
+            }
+        }
+
+        return routes.sortedBy { it.priority }
     }
 
     private fun getSpecificObjectName(clsName: String): String {
@@ -1365,6 +1472,72 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
     private fun stopCamera() = stopRealsensePipeline()
 
+//    override fun onDetect(boundingBoxes: List<BoundingBox>, inferenceTime: Long) {
+//        Log.d(TAG, "YOLO DETECTION: ${boundingBoxes.size} boxes detected for mode: $currentMode")
+//
+//        runOnUiThread {
+//            binding.inferenceTime.text = "${inferenceTime}ms"
+//
+//            if (!isTTSInitialized) {
+//                binding.overlay.setResults(boundingBoxes)
+//                isDetectorBusy = false
+//                return@runOnUiThread
+//            }
+//
+//            val currentTime = System.currentTimeMillis()
+//            val highConfidenceBoxes = boundingBoxes.filter { it.confidence > minConfidence }
+//
+//            // Calculate distances
+//            val depthWidth = currentDepthFrame?.width ?: 0
+//            val depthHeight = currentDepthFrame?.height ?: 0
+//
+//            Log.d(TAG, "Depth frame info: ${depthWidth}x${depthHeight}")
+//
+//            if (depthWidth > 0 && depthHeight > 0 && currentDepthFrame != null) {
+//                highConfidenceBoxes.forEach { box ->
+//                    val distance = calculateRobustDistance(box, depthWidth, depthHeight)
+//                    box.distance = distance
+//                    Log.d(TAG, "Object: ${box.clsName} -> ${distance}m")
+//                }
+//            } else {
+//                Log.w(TAG, "No depth data available")
+//                highConfidenceBoxes.forEach { box ->
+//                    box.distance = -1f
+//                }
+//            }
+//
+//            // Update overlay
+//            binding.overlay.setResults(highConfidenceBoxes)
+//
+//            // Handle different detection modes
+//            when(currentMode) {
+//                DetectionMode.START_DETECTION -> {
+//                    if (isDetectionActive && depthWidth > 0 && depthHeight > 0) {
+//                        handleStartDetection(highConfidenceBoxes, currentTime)
+//                    }
+//                }
+//                DetectionMode.EXPLAIN_SURROUNDING -> {
+//                    // Handle explain surrounding - only if we're in analysis mode
+//                    if (isAnalyzingFrame) {
+//                        Log.d(TAG, "Processing explain surrounding results - completing analysis")
+//                        handleExplainSurroundingResults(highConfidenceBoxes, depthWidth > 0 && depthHeight > 0)
+//
+//                        // Reset analysis state after processing
+//                        resetAnalysisState()
+//                    } else {
+//                        Log.d(TAG, "Received detection results but not in analysis mode - ignoring")
+//                    }
+//                }
+//                DetectionMode.READ_MODE -> {
+//                    // Read mode doesn't need object detection processing
+//                }
+//            }
+//
+//            // Reset detector busy flag
+//            isDetectorBusy = false
+//        }
+//    }
+
     override fun onDetect(boundingBoxes: List<BoundingBox>, inferenceTime: Long) {
         Log.d(TAG, "YOLO DETECTION: ${boundingBoxes.size} boxes detected for mode: $currentMode")
 
@@ -1372,7 +1545,9 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
             binding.inferenceTime.text = "${inferenceTime}ms"
 
             if (!isTTSInitialized) {
-                binding.overlay.setResults(boundingBoxes)
+                // Still show all boxes in overlay for debugging, but filter invalid distances
+                val validBoxes = boundingBoxes.filter { it.distance > 0f }
+                binding.overlay.setResults(validBoxes)
                 isDetectorBusy = false
                 return@runOnUiThread
             }
@@ -1399,23 +1574,28 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                 }
             }
 
-            // Update overlay
-            binding.overlay.setResults(highConfidenceBoxes)
+            // Filter out objects without valid distance data for display and processing
+            val validBoxes = highConfidenceBoxes.filter { it.distance > 0f }
+            val invalidBoxes = highConfidenceBoxes.filter { it.distance <= 0f }
 
-            // Handle different detection modes
+            if (invalidBoxes.isNotEmpty()) {
+                Log.d(TAG, "Filtered out ${invalidBoxes.size} objects without valid distance data")
+            }
+
+            // Update overlay with only valid boxes
+            binding.overlay.setResults(validBoxes)
+
+            // Handle different detection modes with only valid distance objects
             when(currentMode) {
                 DetectionMode.START_DETECTION -> {
-                    if (isDetectionActive && depthWidth > 0 && depthHeight > 0) {
-                        handleStartDetection(highConfidenceBoxes, currentTime)
+                    if (isDetectionActive && depthWidth > 0 && depthHeight > 0 && validBoxes.isNotEmpty()) {
+                        handleStartDetection(validBoxes, currentTime)
                     }
                 }
                 DetectionMode.EXPLAIN_SURROUNDING -> {
-                    // Handle explain surrounding - only if we're in analysis mode
                     if (isAnalyzingFrame) {
                         Log.d(TAG, "Processing explain surrounding results - completing analysis")
-                        handleExplainSurroundingResults(highConfidenceBoxes, depthWidth > 0 && depthHeight > 0)
-
-                        // Reset analysis state after processing
+                        handleExplainSurroundingResults(validBoxes, depthWidth > 0 && depthHeight > 0)
                         resetAnalysisState()
                     } else {
                         Log.d(TAG, "Received detection results but not in analysis mode - ignoring")
@@ -1432,70 +1612,152 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     }
 
     private fun handleExplainSurroundingResults(detectedBoxes: List<BoundingBox>, hasDepthData: Boolean) {
-        Log.d(TAG, "Processing explain surrounding results: ${detectedBoxes.size} objects, depth: $hasDepthData")
+        Log.d(TAG, "Processing explain surrounding results: ${detectedBoxes.size} objects with valid distances")
 
         if (detectedBoxes.isEmpty()) {
-            speak("No objects detected in current view. Area appears clear.")
+            if (hasDepthData) {
+                speak("Environment scan complete. No objects with reliable distance data detected. Area appears clear.")
+            } else {
+                speak("Environment scan complete. No depth data available. Hold camera steady and try again.")
+            }
             return
         }
 
-        if (!hasDepthData) {
-            // Provide basic description without distances
-            val objectNames = detectedBoxes.map { getSpecificObjectName(it.clsName) }.distinct()
-            speak("Objects detected: ${objectNames.joinToString(", ")}. Distance information unavailable.")
-            return
-        }
-
-        // Filter objects with valid distance data
-        val objectsWithDistance = detectedBoxes.filter { it.distance > 0f }
-
-        if (objectsWithDistance.isEmpty()) {
-            val objectNames = detectedBoxes.map { getSpecificObjectName(it.clsName) }.distinct()
-            speak("Objects visible: ${objectNames.joinToString(", ")}. Distance measurement unavailable.")
-            return
-        }
-
-        // Build description
-        val description = buildSimpleDescription(objectsWithDistance)
+        // All objects passed here have valid distances (> 0f), so proceed with detailed description
+        val description = buildDetailedEnvironmentDescription(detectedBoxes)
         speak(description)
     }
 
-    private fun buildSimpleDescription(objects: List<BoundingBox>): String {
-        // Sort by distance
-        val sortedObjects = objects.sortedBy { it.distance }
+//    private fun handleExplainSurroundingResults(detectedBoxes: List<BoundingBox>, hasDepthData: Boolean) {
+//        Log.d(TAG, "Processing explain surrounding results: ${detectedBoxes.size} objects, depth: $hasDepthData")
+//
+//        if (detectedBoxes.isEmpty()) {
+//            speak("Environment scan complete. No objects detected. Path appears clear in all directions.")
+//            return
+//        }
+//
+//        if (!hasDepthData) {
+//            val objectNames = detectedBoxes.map { getSpecificObjectName(it.clsName) }.distinct()
+//            speak("Objects visible: ${objectNames.joinToString(", ")}. Unable to determine distances. Please scan with steady camera movement.")
+//            return
+//        }
+//
+//        // Filter objects with valid distance data
+//        val objectsWithDistance = detectedBoxes.filter { it.distance > 0f }
+//
+//        if (objectsWithDistance.isEmpty()) {
+//            val objectNames = detectedBoxes.map { getSpecificObjectName(it.clsName) }.distinct()
+//            speak("No objects detected. Recommend cautious movement.")
+//            return
+//        }
+//
+//        // Build enhanced description with detailed positioning and navigation guidance
+//        val description = buildDetailedEnvironmentDescription(objectsWithDistance)
+//        speak(description)
+//    }
 
-        // Group by distance ranges
-        val close = sortedObjects.filter { it.distance < 2.25f } // Within 3 steps
-        val medium = sortedObjects.filter { it.distance >= 2.25f && it.distance < 7.5f } // 3-10 steps
-        val far = sortedObjects.filter { it.distance >= 7.5f } // Beyond 10 steps
+    private fun buildDetailedEnvironmentDescription(objects: List<BoundingBox>): String {
+        val frameWidth = 640
+        val frameHeight = 480
 
-        val parts = mutableListOf<String>()
+        // Get enhanced positions for all objects
+        val objectsWithEnhancedPositions = objects.map { box ->
+            val position = getEnhancedObjectPosition(box, frameWidth, frameHeight)
+            Pair(box, position)
+        }
 
-        if (close.isNotEmpty()) {
-            val closeDesc = close.take(3).map { box ->
-                val position = getEnhancedObjectPosition(box, 640, 480)
-                val objectName = getSpecificObjectName(box.clsName)
-                val distance = convertDistanceToSteps(box.distance)
-                "$objectName $distance on ${position.detailedHorizontalPosition}"
+        // Prioritize objects by safety relevance (convert to regular ObjectPosition for existing function)
+        val objectsWithRegularPositions = objectsWithEnhancedPositions.map { (box, enhancedPos) ->
+            val regularPos = ObjectPosition(
+                distance = enhancedPos.distance,
+                horizontalPosition = when {
+                    enhancedPos.detailedHorizontalPosition.contains("left") -> "left"
+                    enhancedPos.detailedHorizontalPosition.contains("right") -> "right"
+                    else -> "center"
+                },
+                verticalPosition = when {
+                    enhancedPos.detailedVerticalPosition.contains("upper") -> "upper"
+                    enhancedPos.detailedVerticalPosition.contains("lower") -> "lower"
+                    else -> "middle"
+                },
+                angle = enhancedPos.angle
+            )
+            Pair(box, regularPos)
+        }
+        val prioritizedObjects = prioritizeObjects(objectsWithRegularPositions)
+
+        // Separate by threat level for navigation (using regular positions)
+        val immediate = prioritizedObjects.filter { it.first.distance < 2.25f } // Within 3 steps
+        val nearTerm = prioritizedObjects.filter { it.first.distance >= 2.25f && it.first.distance < 7.5f } // 3-10 steps
+        val distant = prioritizedObjects.filter { it.first.distance >= 7.5f } // Beyond 10 steps
+
+        val description = buildString {
+            append("Environment scan: ")
+
+            // Critical immediate obstacles (highest priority)
+            if (immediate.isNotEmpty()) {
+                append("Immediate attention required. ")
+                immediate.take(3).forEachIndexed { index, (box, _) ->
+                    // Get enhanced position for this specific box for detailed description
+                    val enhancedPos = getEnhancedObjectPosition(box, frameWidth, frameHeight)
+                    val objectName = getSpecificObjectName(box.clsName)
+                    val distance = convertDistanceToSteps(box.distance)
+                    val locationDesc = "${enhancedPos.detailedHorizontalPosition} ${enhancedPos.detailedVerticalPosition}".trim()
+
+                    append("$objectName $distance at $locationDesc")
+                    if (box.distance < 0.75f) append(" - very close")
+                    if (index < immediate.size - 1 && index < 2) append(", ")
+                }
+                append(". ")
             }
-            parts.add("Close: ${closeDesc.joinToString(", ")}")
 
-            if (close.any { it.distance < 0.75f }) {
-                parts.add("Caution advised")
+            // Near-term navigation objects
+            if (nearTerm.isNotEmpty()) {
+                val nearObjects = nearTerm.take(4)
+                append("Nearby obstacles: ")
+                nearObjects.forEachIndexed { index, (box, _) ->
+                    // Get enhanced position for detailed description
+                    val enhancedPos = getEnhancedObjectPosition(box, frameWidth, frameHeight)
+                    val objectName = getSpecificObjectName(box.clsName)
+                    val distance = convertDistanceToSteps(box.distance)
+                    val direction = enhancedPos.angleDescription
+
+                    append("$objectName $distance $direction")
+                    if (index < nearObjects.size - 1) append(", ")
+                }
+                append(". ")
+            }
+
+            // Distant landmarks (for orientation)
+            if (distant.isNotEmpty()) {
+                val landmarks = distant.take(3).map { getSpecificObjectName(it.first.clsName) }.distinct()
+                append("Distant landmarks: ${landmarks.joinToString(", ")}. ")
+            }
+
+            // Generate and include navigation recommendations
+            val safeRoutes = generateSafeRoutes(objectsWithRegularPositions)
+            if (safeRoutes.isNotEmpty()) {
+                val primaryRoute = safeRoutes.first()
+                append("Navigation guidance: ${primaryRoute.description}")
+
+                // Add alternative if available and different
+                if (safeRoutes.size > 1 && safeRoutes[1].direction != primaryRoute.direction) {
+                    append(" Alternative: ${safeRoutes[1].description}")
+                }
+            } else {
+                // Provide general guidance when no specific routes generated
+                when {
+                    immediate.isEmpty() && nearTerm.isEmpty() ->
+                        append("All directions appear clear for safe movement.")
+                    immediate.any { it.second.horizontalPosition == "center" } ->
+                        append("Center path blocked. Side movement recommended.")
+                    else ->
+                        append("Exercise caution and move slowly.")
+                }
             }
         }
 
-        if (medium.isNotEmpty()) {
-            val mediumNames = medium.map { getSpecificObjectName(it.clsName) }.distinct()
-            parts.add("Medium distance: ${mediumNames.take(4).joinToString(", ")}")
-        }
-
-        if (far.isNotEmpty()) {
-            val farNames = far.map { getSpecificObjectName(it.clsName) }.distinct()
-            parts.add("Far: ${farNames.take(3).joinToString(", ")}")
-        }
-
-        return parts.joinToString(". ") + "."
+        return description
     }
 
     override fun onEmptyDetect() {
